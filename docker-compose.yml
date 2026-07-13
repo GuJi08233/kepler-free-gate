@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  kepler-gate:
+    image: ghcr.io/guji08233/kepler-free-gate:latest
+    container_name: kepler-gate
+    restart: unless-stopped
+    ports:
+      - "13339:13339"
+    environment:
+      - PORT=13339
+      # 网关访问密钥（设置后需要 Bearer 认证）
+      # - GATEWAY_KEY=your-secret-key
+      # 代理槽位数（3-5）
+      # - SLOT_COUNT=3
+      # 自定义代理兜底（逗号分隔）
+      # - CUSTOM_PROXIES=http://1.2.3.4:8080,socks5://5.6.7.8:1080
+      # ZenProxy 备用中继（可选，全部代理失败时降级使用）
+      # - ZENPROXY_KEY=你的密钥
+      # - ZENPROXY_RELAY=https://zenproxy.top/api/relay
+      # 强制走 relay 模式（调试用，1=开启）
+      # - FORCE_RELAY=0
+      # 探活超时（ms）
+      # - PROXY_PROBE_TIMEOUT=8000
+      # 候选池刷新间隔（ms，5 分钟）
+      # - PROXY_REFRESH_MS=300000
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:13339/v1/models"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
