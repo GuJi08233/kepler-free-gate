@@ -58,11 +58,10 @@ let customSlots: Slot[] = [];
 let rrCursor = 0;
 let refreshing = false;
 
-/** 转发到上游时保留的请求头 */
+/** 转发到上游时保留的请求头（不转发 authorization，上游会拒绝） */
 const FORWARD = [
   'content-type',
   'accept',
-  'authorization',
 ];
 
 // ––––––––––––––––––––––––––––––––––––––––––––––––––––
