@@ -348,18 +348,20 @@ async function dispatch(
 
   try {
     if (isStream) {
-      const req = https.request(
-        `${UPSTREAM}${path}`,
-        { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
-        (res) => {
-          res.on('end', () => { try { agent.destroy(); } catch {} });
-          res.on('error', () => { try { agent.destroy(); } catch {} });
-        },
-      );
-      req.on('error', (e) => { try { agent.destroy(); } catch {} });
-      if (body) req.write(body);
-      req.end();
-      return { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: req };
+      return new Promise((resolve, reject) => {
+        const req = https.request(
+          `${UPSTREAM}${path}`,
+          { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
+          (res) => {
+            res.on('end', () => { try { agent.destroy(); } catch {} });
+            res.on('error', () => { try { agent.destroy(); } catch {} });
+            resolve({ status: res.statusCode || 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
+          },
+        );
+        req.on('error', (e) => { try { agent.destroy(); } catch {}; reject(e); });
+        if (body) req.write(body);
+        req.end();
+      });
     }
 
     const { status, body: respBody } = await doHttps(path, method, headers, body, agent);
@@ -427,18 +429,20 @@ async function dispatchViaCustom(
 
   try {
     if (isStream) {
-      const req = https.request(
-        `${UPSTREAM}${path}`,
-        { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
-        (res) => {
-          res.on('end', () => { try { agent.destroy(); } catch {} });
-          res.on('error', () => { try { agent.destroy(); } catch {} });
-        },
-      );
-      req.on('error', () => { try { agent.destroy(); } catch {} });
-      if (body) req.write(body);
-      req.end();
-      return { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: req };
+      return new Promise((resolve, reject) => {
+        const req = https.request(
+          `${UPSTREAM}${path}`,
+          { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
+          (res) => {
+            res.on('end', () => { try { agent.destroy(); } catch {} });
+            res.on('error', () => { try { agent.destroy(); } catch {} });
+            resolve({ status: res.statusCode || 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
+          },
+        );
+        req.on('error', (e) => { try { agent.destroy(); } catch {}; reject(e); });
+        if (body) req.write(body);
+        req.end();
+      });
     }
 
     const { status, body: respBody } = await doHttps(path, method, headers, body, agent);
@@ -465,13 +469,18 @@ async function dispatchDirect(
 
   try {
     if (isStream) {
-      const req = https.request(
-        `${UPSTREAM}${path}`,
-        { method, headers, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
-      );
-      if (body) req.write(body);
-      req.end();
-      return { status: 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: req };
+      return new Promise((resolve, reject) => {
+        const req = https.request(
+          `${UPSTREAM}${path}`,
+          { method, headers, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
+          (res) => {
+            resolve({ status: res.statusCode || 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
+          },
+        );
+        req.on('error', reject);
+        if (body) req.write(body);
+        req.end();
+      });
     }
 
     const { status, body: respBody } = await doHttpsDirect(path, method, headers, body);
