@@ -353,31 +353,33 @@ async function dispatch(
           `${UPSTREAM}${path}`,
           { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
           (res) => {
-            if (res.statusCode === 429) {
-              console.log(`[429] ${slot.addr} 被限流，换IP重试(流式)`);
-              res.resume(); // 丢弃限流响应体，释放 socket
+            const s = res.statusCode || 200;
+            if (s >= 400) {
+              res.resume();
               try { agent.destroy(); } catch {}
+              if (s === 429) console.log(`[429] ${slot.addr} 被限流，换IP重试(流式)`);
+              else console.log(`[错码] ${slot.addr} 状态码 ${s}，换IP重试(流式)`);
               dropSlot(slot.addr);
               if (retry < MAX_RETRIES) {
                 resolve(dispatch(path, method, headers, body, retry + 1, triedAddrs));
                 return;
               }
               if (ZENPROXY_KEY) {
-                console.log(`[回退] 429重试耗尽 → ZenProxy relay`);
+                console.log(`[回退] 重试耗尽 → ZenProxy relay`);
                 resolve(proxyViaRelay(path, method, headers, body));
                 return;
               }
               if (customSlots.length > 0) {
-                console.log(`[回退] 429重试耗尽 → 自定义代理兜底`);
+                console.log(`[回退] 重试耗尽 → 自定义代理兜底`);
                 resolve(dispatchViaCustom(path, method, headers, body));
                 return;
               }
-              resolve({ status: 429, headers: { 'content-type': 'application/json; charset=utf-8' }, body: '{"error":"rate limited (429), 无可用回退"}' });
+              resolve({ status: 502, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: `所有代理失败: 状态码 ${s}` }) });
               return;
             }
             res.on('end', () => { try { agent.destroy(); } catch {} });
             res.on('error', () => { try { agent.destroy(); } catch {} });
-            resolve({ status: res.statusCode || 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
+            resolve({ status: s, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
           },
         );
         req.on('error', (e) => { try { agent.destroy(); } catch {}; reject(e); });
@@ -389,18 +391,19 @@ async function dispatch(
     const { status, body: respBody } = await doHttps(path, method, headers, body, agent);
     try { agent.destroy(); } catch {}
 
-    if (status === 429) {
-      console.log(`[429] ${slot.addr} 被限流，换IP重试`);
+    if (status >= 400) {
+      if (status === 429) console.log(`[429] ${slot.addr} 被限流，换IP重试`);
+      else console.log(`[错码] ${slot.addr} 状态码 ${status}，换IP重试`);
       dropSlot(slot.addr);
       if (retry < MAX_RETRIES) {
         return dispatch(path, method, headers, body, retry + 1, triedAddrs);
       }
       if (ZENPROXY_KEY) {
-        console.log(`[回退] 429重试耗尽 → ZenProxy relay`);
+        console.log(`[回退] 重试耗尽 → ZenProxy relay`);
         return proxyViaRelay(path, method, headers, body);
       }
       if (customSlots.length > 0) {
-        console.log(`[回退] 429重试耗尽 → 自定义代理兜底`);
+        console.log(`[回退] 重试耗尽 → 自定义代理兜底`);
         return dispatchViaCustom(path, method, headers, body);
       }
       return { status, headers: { 'content-type': 'application/json; charset=utf-8' }, body: respBody };
