@@ -45,6 +45,7 @@ const UPSTREAM = 'https://oai.endpoints.kepler.ai.cloud.ovh.net';
 const PORT = parseInt(process.env.PORT || '13339');
 const TIMEOUT = 120000;
 const STREAM_TIMEOUT = 300000;
+const PROXY_FIRST_BYTE_TIMEOUT = 6000;  // 单次代理首字节超时（6s）
 const SLOT_COUNT = Math.max(3, Math.min(5, parseInt(process.env.SLOT_COUNT || '3')));
 const PROXY_PROBE_TIMEOUT = parseInt(process.env.PROXY_PROBE_TIMEOUT || '8000');
 const PROXY_REFRESH_MS = parseInt(process.env.PROXY_REFRESH_MS || '300000');
@@ -294,18 +295,21 @@ function doHttps(
   body: string | undefined, agent: https.Agent,
 ): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
+    const ctl = new AbortController();
+    const firstByteTimer = setTimeout(() => ctl.abort(new Error('代理超时')), PROXY_FIRST_BYTE_TIMEOUT);
     const req = https.request(
       `${UPSTREAM}${path}`,
-      { method, headers, agent, timeout: TIMEOUT, rejectUnauthorized: false },
+      { method, headers, agent, timeout: TIMEOUT, rejectUnauthorized: false, signal: ctl.signal },
       (res) => {
+        clearTimeout(firstByteTimer);
         const chunks: Buffer[] = [];
         res.on('data', (c: Buffer) => chunks.push(c));
         res.on('end', () => resolve({ status: res.statusCode || 200, body: Buffer.concat(chunks).toString('utf-8') }));
         res.on('error', reject);
       },
     );
-    req.on('error', reject);
-    req.on('timeout', () => req.destroy(new Error('超时')));
+    req.on('error', (e) => { clearTimeout(firstByteTimer); reject(e); });
+    req.on('timeout', () => { clearTimeout(firstByteTimer); req.destroy(new Error('超时')); });
     if (body) req.write(body);
     req.end();
   });
@@ -380,10 +384,13 @@ async function dispatchAuto(
   try {
     if (isStream) {
       return new Promise((resolve, reject) => {
+        const ctl = new AbortController();
+        const firstByteTimer = setTimeout(() => ctl.abort(new Error('代理超时')), PROXY_FIRST_BYTE_TIMEOUT);
         const req = https.request(
           `${UPSTREAM}${path}`,
-          { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
+          { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false, signal: ctl.signal },
           (res) => {
+            clearTimeout(firstByteTimer);
             const s = res.statusCode || 200;
             if (s >= 400) {
               res.resume();
@@ -403,7 +410,7 @@ async function dispatchAuto(
             resolve({ status: s, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
           },
         );
-        req.on('error', (e) => { try { agent.destroy(); } catch {}; reject(e); });
+        req.on('error', (e) => { clearTimeout(firstByteTimer); try { agent.destroy(); } catch {}; reject(e); });
         if (body) req.write(body);
         req.end();
       });
@@ -474,10 +481,13 @@ async function dispatchCustom(
   try {
     if (isStream) {
       return new Promise((resolve, reject) => {
+        const ctl = new AbortController();
+        const firstByteTimer = setTimeout(() => ctl.abort(new Error('代理超时')), PROXY_FIRST_BYTE_TIMEOUT);
         const req = https.request(
           `${UPSTREAM}${path}`,
-          { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
+          { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false, signal: ctl.signal },
           (res) => {
+            clearTimeout(firstByteTimer);
             const s = res.statusCode || 200;
             if (s >= 400) {
               res.resume();
@@ -496,7 +506,7 @@ async function dispatchCustom(
             resolve({ status: s, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
           },
         );
-        req.on('error', (e) => { try { agent.destroy(); } catch {}; reject(e); });
+        req.on('error', (e) => { clearTimeout(firstByteTimer); try { agent.destroy(); } catch {}; reject(e); });
         if (body) req.write(body);
         req.end();
       });
@@ -570,10 +580,13 @@ async function dispatchViaCustom(
   try {
     if (isStream) {
       return new Promise((resolve, reject) => {
+        const ctl = new AbortController();
+        const firstByteTimer = setTimeout(() => ctl.abort(new Error('代理超时')), PROXY_FIRST_BYTE_TIMEOUT);
         const req = https.request(
           `${UPSTREAM}${path}`,
-          { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
+          { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false, signal: ctl.signal },
           (res) => {
+            clearTimeout(firstByteTimer);
             const s = res.statusCode || 200;
             if (s >= 400) {
               res.resume();
@@ -592,7 +605,7 @@ async function dispatchViaCustom(
             resolve({ status: s, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
           },
         );
-        req.on('error', (e) => { try { agent.destroy(); } catch {}; reject(e); });
+        req.on('error', (e) => { clearTimeout(firstByteTimer); try { agent.destroy(); } catch {}; reject(e); });
         if (body) req.write(body);
         req.end();
       });
@@ -632,14 +645,17 @@ async function dispatchDirect(
   try {
     if (isStream) {
       return new Promise((resolve, reject) => {
+        const ctl = new AbortController();
+        const firstByteTimer = setTimeout(() => ctl.abort(new Error('直连超时')), PROXY_FIRST_BYTE_TIMEOUT);
         const req = https.request(
           `${UPSTREAM}${path}`,
-          { method, headers, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
+          { method, headers, timeout: STREAM_TIMEOUT, rejectUnauthorized: false, signal: ctl.signal },
           (res) => {
+            clearTimeout(firstByteTimer);
             resolve({ status: res.statusCode || 200, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
           },
         );
-        req.on('error', reject);
+        req.on('error', (e) => { clearTimeout(firstByteTimer); reject(e); });
         if (body) req.write(body);
         req.end();
       });
