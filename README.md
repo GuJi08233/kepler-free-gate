@@ -180,6 +180,7 @@ docker restart kepler-gate
 |---|---|---|
 | `PORT` | `13339` | 监听端口 |
 | `PROXY_MODE` | `auto` | 代理模式：`auto`（自动代理池）或 `custom`（仅自定义代理） |
+| `MAX_RETRIES` | `3` | 最大重试次数（失败后重试同一个代理的次数） |
 | `GATEWAY_KEY` | 空 | 网关访问密钥（设置后需要 Bearer 认证） |
 | `SLOT_COUNT` | `3` | S级代理槽位数（范围 3-5，仅 auto 模式） |
 | `CUSTOM_PROXIES` | 空 | 自定义代理列表，逗号分隔（custom 模式必填，auto 模式可选兜底） |

@@ -33,7 +33,7 @@ interface Slot {
 const PROXY_API = 'https://proxy.amux.ai/api/proxies';
 const UPSTREAM = 'https://oai.endpoints.kepler.ai.cloud.ovh.net';
 const PORT = parseInt(process.env.PORT || '13339');
-const MAX_RETRIES = 3;
+const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3');
 const TIMEOUT = 120000;
 const STREAM_TIMEOUT = 300000;
 const SLOT_COUNT = Math.max(3, Math.min(5, parseInt(process.env.SLOT_COUNT || '3')));
