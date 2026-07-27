@@ -40,7 +40,10 @@ const SLOT_COUNT = Math.max(3, Math.min(5, parseInt(process.env.SLOT_COUNT || '3
 const PROXY_PROBE_TIMEOUT = parseInt(process.env.PROXY_PROBE_TIMEOUT || '8000');
 const PROXY_REFRESH_MS = parseInt(process.env.PROXY_REFRESH_MS || '300000');
 
-// –– 自定义代理配置（兜底备用）––
+// –– 代理模式：auto | custom ––
+const PROXY_MODE = (process.env.PROXY_MODE || 'auto').toLowerCase() as 'auto' | 'custom';
+
+// –– 自定义代理配置（custom 模式必填，auto 模式可选兜底）––
 const CUSTOM_PROXIES = process.env.CUSTOM_PROXIES || '';
 
 // –– ZenProxy 备用通道 ––
@@ -65,7 +68,7 @@ const FORWARD = [
 ];
 
 // ––––––––––––––––––––––––––––––––––––––––––––––––––––
-//  自定义代理解析（兜底备用）
+//  自定义代理解析
 // ––––––––––––––––––––––––––––––––––––––––––––––––––––
 
 function parseCustomProxies(input: string): ProxyItem[] {
@@ -103,7 +106,7 @@ async function initCustomSlots(): Promise<void> {
 }
 
 // ––––––––––––––––––––––––––––––––––––––––––––––––––––
-//  候选池（S级免费代理）
+//  候选池（S级免费代理，仅 auto 模式使用）
 // ––––––––––––––––––––––––––––––––––––––––––––––––––––
 
 async function loadCandidates(): Promise<void> {
@@ -186,7 +189,7 @@ async function probe(item: ProxyItem): Promise<{ ok: boolean; latencyMs?: number
 }
 
 // ––––––––––––––––––––––––––––––––––––––––––––––––––––
-//  Slot 管理：探活 → 填充 → 刷新
+//  Slot 管理（仅 auto 模式使用）
 // ––––––––––––––––––––––––––––––––––––––––––––––––––––
 
 async function fillSlots(): Promise<void> {
@@ -232,7 +235,17 @@ function dropSlot(addr: string): void {
     slots.splice(idx, 1);
     console.log(`[弃] ${addr} → ${slots.length}/${SLOT_COUNT}`);
   }
-  fillSlots().catch((e) => console.error('[槽] fill error:', e.message));
+  if (PROXY_MODE === 'auto') {
+    fillSlots().catch((e) => console.error('[槽] fill error:', e.message));
+  }
+}
+
+function dropCustomSlot(addr: string): void {
+  const idx = customSlots.findIndex((s) => s.addr === addr);
+  if (idx >= 0) {
+    customSlots.splice(idx, 1);
+    console.log(`[弃兜底] ${addr} → ${customSlots.length} remaining`);
+  }
 }
 
 async function refreshSlots(): Promise<void> {
@@ -306,8 +319,12 @@ function doHttpsDirect(
   });
 }
 
-/** 核心：轮询选 slot，失败重试，回退策略：S级代理 → ZenProxy → 自定义代理 → 直连 */
-async function dispatch(
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+//  dispatch（auto 模式）
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+
+/** auto 模式：S级代理 → ZenProxy → 自定义代理 → 直连 */
+async function dispatchAuto(
   path: string, method: string, headers: Record<string, string>,
   body: string | undefined, retry = 0, triedAddrs = new Set<string>(),
 ): Promise<{ status: number; headers: Record<string, string>; body?: string; stream?: any }> {
@@ -361,7 +378,7 @@ async function dispatch(
               else console.log(`[错码] ${slot.addr} 状态码 ${s}，换IP重试(流式)`);
               dropSlot(slot.addr);
               if (retry < MAX_RETRIES) {
-                resolve(dispatch(path, method, headers, body, retry + 1, triedAddrs));
+                resolve(dispatchAuto(path, method, headers, body, retry + 1, triedAddrs));
                 return;
               }
               if (ZENPROXY_KEY) {
@@ -396,7 +413,7 @@ async function dispatch(
       else console.log(`[错码] ${slot.addr} 状态码 ${status}，换IP重试`);
       dropSlot(slot.addr);
       if (retry < MAX_RETRIES) {
-        return dispatch(path, method, headers, body, retry + 1, triedAddrs);
+        return dispatchAuto(path, method, headers, body, retry + 1, triedAddrs);
       }
       if (ZENPROXY_KEY) {
         console.log(`[回退] 重试耗尽 → ZenProxy relay`);
@@ -417,7 +434,7 @@ async function dispatch(
     dropSlot(slot.addr);
 
     if (retry < MAX_RETRIES) {
-      return dispatch(path, method, headers, body, retry + 1, triedAddrs);
+      return dispatchAuto(path, method, headers, body, retry + 1, triedAddrs);
     }
     if (ZENPROXY_KEY) {
       console.log(`[回退] 重试耗尽 → ZenProxy relay`);
@@ -431,7 +448,129 @@ async function dispatch(
   }
 }
 
-/** 通过自定义代理兜底转发 */
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+//  dispatch（custom 模式）
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+
+/** custom 模式：仅使用自定义代理 → ZenProxy → 直连 */
+async function dispatchCustom(
+  path: string, method: string, headers: Record<string, string>,
+  body: string | undefined, retry = 0, triedAddrs = new Set<string>(),
+): Promise<{ status: number; headers: Record<string, string>; body?: string; stream?: any }> {
+  if (FORCE_RELAY) {
+    if (ZENPROXY_KEY) return proxyViaRelay(path, method, headers, body);
+    return { status: 502, headers: { 'content-type': 'application/json' }, body: '{"error":"FORCE_RELAY 但未配置 ZENPROXY_KEY"}' };
+  }
+
+  const available = customSlots.filter((s) => !triedAddrs.has(s.addr));
+  if (available.length === 0) {
+    if (ZENPROXY_KEY) {
+      console.log(`[回退] 自定义代理失败 → ZenProxy relay`);
+      return proxyViaRelay(path, method, headers, body);
+    }
+    console.log(`[直连] 无可用代理，直接连接上游`);
+    return dispatchDirect(path, method, headers, body);
+  }
+
+  const slot = available[rrCursor % available.length];
+  rrCursor = (rrCursor + 1) % customSlots.length;
+
+  triedAddrs.add(slot.addr);
+  console.log(`[取] ${slot.addr} (retry=${retry})`);
+
+  const isStream = (headers['accept'] || '').includes('event-stream');
+  const agent = makeAgent(slot.url, slot.proto);
+
+  try {
+    if (isStream) {
+      return new Promise((resolve, reject) => {
+        const req = https.request(
+          `${UPSTREAM}${path}`,
+          { method, headers, agent, timeout: STREAM_TIMEOUT, rejectUnauthorized: false },
+          (res) => {
+            const s = res.statusCode || 200;
+            if (s >= 400) {
+              res.resume();
+              try { agent.destroy(); } catch {}
+              if (s === 429) console.log(`[429] ${slot.addr} 被限流，换IP重试(流式)`);
+              else console.log(`[错码] ${slot.addr} 状态码 ${s}，换IP重试(流式)`);
+              dropCustomSlot(slot.addr);
+              if (retry < MAX_RETRIES) {
+                resolve(dispatchCustom(path, method, headers, body, retry + 1, triedAddrs));
+                return;
+              }
+              if (ZENPROXY_KEY) {
+                console.log(`[回退] 重试耗尽 → ZenProxy relay`);
+                resolve(proxyViaRelay(path, method, headers, body));
+                return;
+              }
+              resolve({ status: 502, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: `所有代理失败: 状态码 ${s}` }) });
+              return;
+            }
+            res.on('end', () => { try { agent.destroy(); } catch {} });
+            res.on('error', () => { try { agent.destroy(); } catch {} });
+            resolve({ status: s, headers: { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' }, stream: res });
+          },
+        );
+        req.on('error', (e) => { try { agent.destroy(); } catch {}; reject(e); });
+        if (body) req.write(body);
+        req.end();
+      });
+    }
+
+    const { status, body: respBody } = await doHttps(path, method, headers, body, agent);
+    try { agent.destroy(); } catch {}
+
+    if (status >= 400) {
+      if (status === 429) console.log(`[429] ${slot.addr} 被限流，换IP重试`);
+      else console.log(`[错码] ${slot.addr} 状态码 ${status}，换IP重试`);
+      dropCustomSlot(slot.addr);
+      if (retry < MAX_RETRIES) {
+        return dispatchCustom(path, method, headers, body, retry + 1, triedAddrs);
+      }
+      if (ZENPROXY_KEY) {
+        console.log(`[回退] 重试耗尽 → ZenProxy relay`);
+        return proxyViaRelay(path, method, headers, body);
+      }
+      return { status, headers: { 'content-type': 'application/json; charset=utf-8' }, body: respBody };
+    }
+
+    return { status, headers: { 'content-type': 'application/json; charset=utf-8' }, body: respBody };
+  } catch (e: any) {
+    console.error(`[错] ${slot.addr}: ${e.message}`);
+    try { agent.destroy(); } catch {}
+
+    dropCustomSlot(slot.addr);
+
+    if (retry < MAX_RETRIES) {
+      return dispatchCustom(path, method, headers, body, retry + 1, triedAddrs);
+    }
+    if (ZENPROXY_KEY) {
+      console.log(`[回退] 重试耗尽 → ZenProxy relay`);
+      return proxyViaRelay(path, method, headers, body);
+    }
+    return { status: 502, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: `所有代理失败: ${e.message}` }) };
+  }
+}
+
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+//  通用调度入口
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+
+function dispatch(
+  path: string, method: string, headers: Record<string, string>,
+  body: string | undefined, retry = 0, triedAddrs = new Set<string>(),
+): Promise<{ status: number; headers: Record<string, string>; body?: string; stream?: any }> {
+  if (PROXY_MODE === 'custom') {
+    return dispatchCustom(path, method, headers, body, retry, triedAddrs);
+  }
+  return dispatchAuto(path, method, headers, body, retry, triedAddrs);
+}
+
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+//  通过自定义代理转发（auto 模式兜底）
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+
 async function dispatchViaCustom(
   path: string, method: string, headers: Record<string, string>,
   body: string | undefined, retry = 0, triedAddrs = new Set<string>(),
@@ -485,7 +624,10 @@ async function dispatchViaCustom(
   }
 }
 
-/** 直连上游（无代理时使用） */
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+//  直连 / ZenProxy
+// ––––––––––––––––––––––––––––––––––––––––––––––––––––
+
 async function dispatchDirect(
   path: string, method: string, headers: Record<string, string>,
   body: string | undefined,
@@ -516,7 +658,6 @@ async function dispatchDirect(
   }
 }
 
-/** ZenProxy 备用通道 */
 async function proxyViaRelay(
   path: string, method: string, headers: Record<string, string>, body: string | undefined,
 ): Promise<{ status: number; headers: Record<string, string>; body?: string; stream?: any }> {
@@ -542,7 +683,7 @@ async function handleRequest(method: string, pathname: string, search: string, h
     return {
       status: 200,
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ status: 'ok', upstream: UPSTREAM, slots: slots.map((s) => s.addr) }),
+      body: JSON.stringify({ status: 'ok', upstream: UPSTREAM, mode: PROXY_MODE, slots: slots.map((s) => s.addr), customSlots: customSlots.map((s) => s.addr) }),
     };
   }
 
@@ -578,14 +719,21 @@ console.log(`[门] http://localhost:${PORT}`);
 console.log(`[门] 上游:      ${UPSTREAM}`);
 console.log(`[门] 端点:      /v1/models | /v1/chat/completions`);
 console.log(`[门] 认证:      ${GATEWAY_KEY ? '已启用 GATEWAY_KEY' : '未启用（任何人可访问）'}`);
-console.log(`[门] 策略:      S级代理(${SLOT_COUNT}槽) → ${ZENPROXY_KEY ? 'ZenProxy → ' : ''}自定义代理兜底${CUSTOM_PROXIES ? ` (${parseCustomProxies(CUSTOM_PROXIES).length}个)` : '(未配置)'}`);
+console.log(`[门] 模式:      ${PROXY_MODE}`);
+if (PROXY_MODE === 'auto') {
+  console.log(`[门] 策略:      S级代理(${SLOT_COUNT}槽) → ${ZENPROXY_KEY ? 'ZenProxy → ' : ''}自定义代理兜底${CUSTOM_PROXIES ? ` (${parseCustomProxies(CUSTOM_PROXIES).length}个)` : '(未配置)'}`);
+} else {
+  console.log(`[门] 策略:      自定义代理 → ${ZENPROXY_KEY ? 'ZenProxy → ' : ''}直连`);
+}
 console.log(`[门] 备用:      ${ZENPROXY_KEY ? `ZenProxy relay 已启用 (${ZENPROXY_RELAY})` : '未配置 ZENPROXY_KEY'}`);
 console.log(`[门] 重试:      MAX_RETRIES=${MAX_RETRIES}`);
 
 // 预热
-loadCandidates()
-  .then(() => fillSlots())
-  .then(() => initCustomSlots())
+const initPromise = PROXY_MODE === 'auto'
+  ? loadCandidates().then(() => fillSlots()).then(() => initCustomSlots())
+  : initCustomSlots();
+
+initPromise
   .then(() => console.log(`[门] 预热完成，服务启动`))
   .catch((e) => console.error('[门] 预热失败:', e.message));
 
@@ -684,11 +832,13 @@ if (isBun) {
   });
 }
 
-// 定期刷新
-const refreshTimer = setInterval(() => {
-  refreshSlots().catch((e) => console.error('[门] refresh failed:', e));
-}, PROXY_REFRESH_MS);
+// 定期刷新（仅 auto 模式）
+const refreshTimer = PROXY_MODE === 'auto'
+  ? setInterval(() => {
+      refreshSlots().catch((e) => console.error('[门] refresh failed:', e));
+    }, PROXY_REFRESH_MS)
+  : null;
 
 // 优雅退出
-process.on('SIGTERM', () => { clearInterval(refreshTimer); process.exit(0); });
-process.on('SIGINT', () => { clearInterval(refreshTimer); process.exit(0); });
+process.on('SIGTERM', () => { if (refreshTimer) clearInterval(refreshTimer); process.exit(0); });
+process.on('SIGINT', () => { if (refreshTimer) clearInterval(refreshTimer); process.exit(0); });

@@ -179,16 +179,21 @@ docker restart kepler-gate
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `PORT` | `13339` | 监听端口 |
+| `PROXY_MODE` | `auto` | 代理模式：`auto`（自动代理池）或 `custom`（仅自定义代理） |
 | `GATEWAY_KEY` | 空 | 网关访问密钥（设置后需要 Bearer 认证） |
-| `SLOT_COUNT` | `3` | S级代理槽位数（范围 3-5） |
-| `CUSTOM_PROXIES` | 空 | 自定义代理列表，逗号分隔，作为兜底备用 |
+| `SLOT_COUNT` | `3` | S级代理槽位数（范围 3-5，仅 auto 模式） |
+| `CUSTOM_PROXIES` | 空 | 自定义代理列表，逗号分隔（custom 模式必填，auto 模式可选兜底） |
 | `ZENPROXY_KEY` | 空 | 启用 ZenProxy 备用通道（[申请 Key](https://zenproxy.top)） |
 | `ZENPROXY_RELAY` | `https://zenproxy.top/api/relay` | 自定义 relay 端点 |
 | `FORCE_RELAY` | `0` | 设为 `1` 跳过代理池强制走 ZenProxy（调试用） |
 | `PROXY_PROBE_TIMEOUT` | `8000` | 新代理探活超时（ms） |
-| `PROXY_REFRESH_MS` | `300000` | 候选池刷新间隔（ms，默认 5 分钟） |
+| `PROXY_REFRESH_MS` | `300000` | 候选池刷新间隔（ms，默认 5 分钟，仅 auto 模式） |
 
-### 代理回退策略
+### 代理模式
+
+#### auto 模式（默认）
+
+从公共代理池自动获取 S 级代理，多 IP 轮换使用：
 
 ```
 S级免费代理（3-5个槽位轮换）
@@ -199,6 +204,23 @@ ZenProxy（需配置 ZENPROXY_KEY）
 ```
 
 **优先级**：S级代理 → ZenProxy（可选） → 自定义代理（兜底）
+
+#### custom 模式
+
+仅使用自定义代理，不连接公共代理池：
+
+```bash
+# 使用 custom 模式
+PROXY_MODE=custom CUSTOM_PROXIES=http://1.2.3.4:8080,socks5://5.6.7.8:1080 bun run gate.ts
+```
+
+```
+自定义代理（HTTP/SOCKS5）
+    ↓ 失败重试3次
+ZenProxy（需配置 ZENPROXY_KEY）
+    ↓ 未配置或失败
+返回错误
+```
 
 ### 网关认证
 
