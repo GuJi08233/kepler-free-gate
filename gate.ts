@@ -355,15 +355,18 @@ async function dispatchAuto(
 
   const available = slots.filter((s) => !triedAddrs.has(s.addr));
   if (available.length === 0 || retry >= SLOT_RETRIES) {
-    // S级代理耗尽或重试次数用完 → 回退
+    // S级代理耗尽 → ZenProxy → 自定义代理 → 直连（四层串联）
+    let lastResult: { status: number; headers: Record<string, string>; body?: string; stream?: any } | null = null;
     if (ZENPROXY_KEY) {
       console.log(`[回退] S级代理(${retry}/${SLOT_RETRIES}) → ZenProxy`);
-      return dispatchZenProxy(path, method, headers, body, 0, reqLog);
+      lastResult = await dispatchZenProxy(path, method, headers, body, 0, reqLog);
+      if (lastResult.status < 400) return lastResult;
+      console.log(`[回退] ZenProxy(${lastResult.status}) → 自定义代理`);
     }
     if (customSlots.length > 0) {
-      console.log(`[回退] S级代理(${retry}/${SLOT_RETRIES}) → 自定义代理`);
       return dispatchViaCustom(path, method, headers, body, 0, reqLog);
     }
+    if (lastResult) return lastResult;
     console.log(`[直连] 无可用代理，直接连接上游`);
     return dispatchDirect(path, method, headers, body);
   }
