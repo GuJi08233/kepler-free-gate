@@ -46,6 +46,7 @@ const PORT = parseInt(process.env.PORT || '13339');
 const TIMEOUT = 120000;
 const STREAM_TIMEOUT = 300000;
 const PROXY_FIRST_BYTE_TIMEOUT = 6000;  // 单次代理首字节超时（6s）
+const HARD_TIMEOUT = 30000;  // 请求总超时（30s），防止卡死
 const SLOT_COUNT = Math.max(3, Math.min(5, parseInt(process.env.SLOT_COUNT || '3')));
 const PROXY_PROBE_TIMEOUT = parseInt(process.env.PROXY_PROBE_TIMEOUT || '8000');
 const PROXY_REFRESH_MS = parseInt(process.env.PROXY_REFRESH_MS || '300000');
@@ -749,7 +750,16 @@ async function handleRequest(method: string, pathname: string, search: string, h
         if (!json.stream) { json.stream = true; body = JSON.stringify(json); }
       } catch {}
     }
-    return dispatch('/v1/chat/completions', 'POST', h, body, 0, new Set<string>(), reqLog);
+    // 硬超时：30秒无响应直接返回504，防止卡死
+    return Promise.race([
+      dispatch('/v1/chat/completions', 'POST', h, body, 0, new Set<string>(), reqLog),
+      new Promise<{ status: number; headers: Record<string, string>; body: string }>((_, reject) =>
+        setTimeout(() => reject(new Error('请求超时')), HARD_TIMEOUT)
+      ),
+    ]).catch((e: Error) => {
+      console.log(`[超时] POST /v1/chat/completions | ${e.message}`);
+      return { status: 504, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: e.message }) };
+    });
   }
 
   return { status: 404, headers: { 'content-type': 'application/json' }, body: '{"error":"not found"}' };
@@ -822,7 +832,17 @@ if (isBun) {
       req.headers.forEach((v, k) => { headers[k] = v; });
       const body = method === 'POST' ? await req.text() : undefined;
 
-      const result = await handleRequest(method, pathname, search, headers, body, reqLog);
+      // 硬超时：30秒无响应直接返回504，防止卡死
+      const result = await Promise.race([
+        handleRequest(method, pathname, search, headers, body, reqLog),
+        new Promise<{ status: number; headers: Record<string, string>; body?: string; stream?: any }>((_, reject) =>
+          setTimeout(() => reject(new Error('请求超时')), HARD_TIMEOUT)
+        ),
+      ]).catch((e: Error) => {
+        console.log(`[超时] ${method} ${pathname} | ${e.message}`);
+        reqLog.finalStatus = 504;
+        return { status: 504, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: e.message }) };
+      });
 
       // 记录请求完成日志
       const elapsed = Date.now() - reqLog.startTime;
