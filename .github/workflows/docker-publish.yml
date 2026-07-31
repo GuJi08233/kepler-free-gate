@@ -2,6 +2,7 @@ name: Docker Publish
 
 on:
   push:
+    branches: ['master']
     tags: ['v*']
   workflow_dispatch:
 
@@ -19,6 +20,15 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Run tests
+        run: go test ./...
 
       - name: Set up QEMU (multi-arch)
         uses: docker/setup-qemu-action@v3

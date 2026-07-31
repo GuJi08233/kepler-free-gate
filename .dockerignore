@@ -1,6 +1,10 @@
-node_modules
 .git
 .github
+.env
+.env.*
 *.md
-.dockerignore
-.gitignore
+*.log
+gate
+*.test
+.vscode
+.idea
