@@ -2,9 +2,7 @@ name: Docker Publish
 
 on:
   push:
-    branches: ['master']
     tags: ['v*']
-  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
